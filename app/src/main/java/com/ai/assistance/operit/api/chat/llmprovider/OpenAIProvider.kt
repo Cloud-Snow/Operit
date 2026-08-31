@@ -962,7 +962,7 @@ open class OpenAIProvider(
             if (effectiveContent != null) {
                 historyMessage.put("content", buildContentField(context, effectiveContent, role = "assistant"))
             } else {
-                historyMessage.put("content", null)
+                historyMessage.put("content", "")
             }
             historyMessage.put("tool_calls", queuedToolCalls)
             messagesArray.put(historyMessage)
