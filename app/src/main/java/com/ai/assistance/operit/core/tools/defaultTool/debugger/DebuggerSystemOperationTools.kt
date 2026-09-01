@@ -2,6 +2,7 @@ package com.ai.assistance.operit.core.tools.defaultTool.debugger
 
 import android.content.Context
 import com.ai.assistance.operit.util.AppLogger
+import com.ai.assistance.operit.core.tools.AppListData
 import com.ai.assistance.operit.core.tools.AppOperationData
 import com.ai.assistance.operit.core.tools.NotificationData
 import com.ai.assistance.operit.core.tools.StringResultData
@@ -16,6 +17,53 @@ open class DebuggerSystemOperationTools(context: Context) :
     AccessibilitySystemOperationTools(context) {
 
     private val TAG = "DebuggerSystemTools"
+
+    /**
+     * 覆写应用列表: 在调试级 (Shizuku/ADB/root) 下改用 `pm list packages` 查询。
+     *
+     * 原因: Android 11+ 的包可见性在部分设备/策略下会使 PackageManager.getInstalledApplications
+     * 只返回本应用自身 (即使已声明 QUERY_ALL_PACKAGES), 而 shell 通道 (pm list packages) 不受此限制。
+     * shell 不可用时回退到父实现。
+     */
+    override suspend fun listInstalledApps(tool: AITool): ToolResult {
+        val includeSystemApps =
+            tool.parameters.find { it.name == "include_system_apps" || it.name == "include_system" }
+                ?.value?.toBoolean() ?: false
+        val command = if (includeSystemApps) "pm list packages" else "pm list packages -3"
+        val shellResult = try {
+            AndroidShellExecutor.executeShellCommand(command)
+        } catch (e: Exception) {
+            AppLogger.w(TAG, "listInstalledApps via shell failed", e)
+            null
+        }
+        if (shellResult != null && shellResult.success) {
+            val packageNames = shellResult.stdout.lineSequence()
+                .map { it.trim() }
+                .filter { it.startsWith("package:") }
+                .map { it.removePrefix("package:").trim() }
+                .filter { it.isNotEmpty() }
+                .distinct()
+                .toList()
+            if (packageNames.isNotEmpty()) {
+                val appDetails = packageNames.map { packageName ->
+                    val appName = try {
+                        val appInfo = context.packageManager.getApplicationInfo(packageName, 0)
+                        context.packageManager.getApplicationLabel(appInfo).toString()
+                    } catch (e: Exception) {
+                        // 包可见性受限时个别包名无法解析 label, 直接使用包名保证列表完整
+                        packageName
+                    }
+                    "$appName ($packageName)"
+                }.sorted()
+                return ToolResult(
+                    toolName = tool.name,
+                    success = true,
+                    result = AppListData(includesSystemApps = includeSystemApps, packages = appDetails)
+                )
+            }
+        }
+        return super.listInstalledApps(tool)
+    }
 
     override suspend fun modifySystemSetting(tool: AITool): ToolResult {
         val setting = tool.parameters.find { it.name == "setting" }?.value ?: ""

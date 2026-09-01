@@ -54,7 +54,7 @@ import com.ai.assistance.operit.util.AndroidUserPathUtils
 import com.ai.assistance.operit.util.OperitPaths
 
 /** 提供系统级操作的工具类 包括系统设置修改、应用安装和卸载等 这些操作需要用户明确授权 */
-open class StandardSystemOperationTools(private val context: Context) {
+open class StandardSystemOperationTools(protected val context: Context) {
 
     companion object {
         private const val TAG = "SystemOperationTools"
@@ -465,8 +465,9 @@ open class StandardSystemOperationTools(private val context: Context) {
 
     /** 获取已安装的应用列表 */
     suspend fun listInstalledApps(tool: AITool): ToolResult {
+        // 兼容两种参数名: 工具 schema 使用 include_system_apps, JS 桥 (Tools.System.listApps) 使用 include_system
         val includeSystemApps =
-                tool.parameters.find { it.name == "include_system_apps" }?.value?.toBoolean()
+                tool.parameters.find { it.name == "include_system_apps" || it.name == "include_system" }?.value?.toBoolean()
                         ?: false
         return try {
             val pm = context.packageManager
