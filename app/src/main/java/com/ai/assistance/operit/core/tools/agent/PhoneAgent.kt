@@ -57,7 +57,14 @@ data class StepResult(
 data class ParsedAgentAction(
     val metadata: String,
     val actionName: String?,
-    val fields: Map<String, String>
+    val fields: Map<String, String>,
+    /**
+     * answer 中 do(...) 出现在 finish(...) 之前时的语义:
+     * 先执行该 do, 执行完成后本轮即结束 (保证终止且不丢最后一步动作)。
+     */
+    val finishAfterDo: Boolean = false,
+    /** finishAfterDo 为 true 时的收尾消息 (来自 finish(message=...))。 */
+    val finishAfterDoMessage: String? = null
 )
 
 private data class PrivilegedExecutionState(
@@ -634,11 +641,11 @@ class PhoneAgent(
         val fullResponse = contentBuilder.toString().trim()
         AppLogger.d("PhoneAgent", "[$agentId] _executeStep: AI response collected, length=${fullResponse.length}")
 
-        val (thinking, answer) = parseThinkingAndAction(fullResponse)
+        val (thinking, answer) = PhoneAgentActionParser.parseThinkingAndAction(fullResponse)
         val historyEntry = "<think>$thinking</think><answer>$answer</answer>"
         _contextHistory.add("assistant" to historyEntry)
 
-        val parsedAction = parseAgentAction(answer)
+        val parsedAction = PhoneAgentActionParser.parseAgentAction(answer)
         actionHandler.removeImagesFromLastUserMessage(_contextHistory)
 
         if (parsedAction.metadata == "finish") {
@@ -649,78 +656,138 @@ class PhoneAgent(
         if (parsedAction.metadata == "do") {
             awaitIfPaused()
             val execResult = actionHandler.executeAgentAction(parsedAction)
-            if (execResult.shouldFinish) {
-                 return StepResult(success = execResult.success, finished = true, action = parsedAction, thinking = thinking, message = execResult.message)
+            val message = when {
+                execResult.shouldFinish -> execResult.message
+                parsedAction.finishAfterDo ->
+                    parsedAction.finishAfterDoMessage ?: execResult.message ?: "Task finished."
+                else -> execResult.message
             }
-            return StepResult(success = execResult.success, finished = false, action = parsedAction, thinking = thinking, message = execResult.message)
+            return StepResult(
+                success = execResult.success,
+                finished = execResult.shouldFinish || parsedAction.finishAfterDo,
+                action = parsedAction,
+                thinking = thinking,
+                message = message
+            )
         }
 
         val errorMessage = "Unknown action format: ${parsedAction.metadata}"
         return StepResult(success = false, finished = true, action = parsedAction, thinking = thinking, message = errorMessage)
     }
+}
 
-    private fun extractTagContent(text: String, tag: String): String? {
-        val pattern = Regex("""<$tag>(.*?)</$tag>""", RegexOption.DOT_MATCHES_ALL)
-        return pattern.find(text)?.groupValues?.getOrNull(1)?.trim()
+/**
+ * 解析 UI 自动化模型的 <think>/<answer> 输出 (确定性语义, 由 JVM 单测锁定)。
+ *
+ * 规则(按序):
+ * 1. 优先以提示词规定的 `<answer>...</answer>` 块为动作锚点; 无 answer 块时回退到首个完整命令。
+ * 2. 命令必须是完整出现 (finish( / do(), 大小写/空白/全角括号容忍, 不做零散子串扫描。
+ * 3. answer 内 finish 优先于 do: 若 do(...) 位于 finish(...) 之前, 返回 finishAfterDo=true,
+ *    由调用方先执行该 do 再终止本轮回合——既不丢最后一步动作, 又保证任务必然终止。
+ */
+internal object PhoneAgentActionParser {
+
+    private data class AnswerBlock(val startIndex: Int, val content: String)
+
+    private fun extractAnswerBlock(text: String): AnswerBlock? {
+        val pattern = Regex("""<answer>(.*?)</answer>""", RegexOption.DOT_MATCHES_ALL)
+        var last: AnswerBlock? = null
+        for (m in pattern.findAll(text)) {
+            last = AnswerBlock(m.range.first, m.groupValues[1].trim())
+        }
+        return last
     }
 
-    private fun parseThinkingAndAction(content: String): Pair<String?, String> {
-        val full = content.trim()
-        val finishMarker = "finish(message="
-        val finishIndex = full.indexOf(finishMarker)
-        if (finishIndex >= 0) {
-            val thinking = full.substring(0, finishIndex).trim().ifEmpty { null }
-            val action = full.substring(finishIndex).trim()
-            return thinking to action
-        }
-        val doMarker = "do(action="
-        val doIndex = full.indexOf(doMarker)
-        if (doIndex >= 0) {
-            val thinking = full.substring(0, doIndex).trim().ifEmpty { null }
-            val action = full.substring(doIndex).trim()
-            return thinking to action
-        }
-        val thinkTag = extractTagContent(full, "think")
-        val answerTag = extractTagContent(full, "answer")
-        if (thinkTag != null || answerTag != null) {
-            return thinkTag to (answerTag ?: full)
-        }
-        return null to full
+    private val finishCommand = Regex("""\bfinish\s*[\(（]""", RegexOption.IGNORE_CASE)
+    private val doCommand = Regex("""\bdo\s*[\(（]""", RegexOption.IGNORE_CASE)
+
+    private fun parseFinishMessage(raw: String): String {
+        val msgRe = Regex(
+            """\bfinish\s*[\(（]\s*message\s*=\s*["“'’](.*?)["“'’]""",
+            RegexOption.DOT_MATCHES_ALL or RegexOption.IGNORE_CASE
+        )
+        return msgRe.find(raw)?.groupValues?.getOrNull(1)?.trim() ?: ""
     }
 
-    private fun parseAgentAction(raw: String): ParsedAgentAction {
-        val original = raw.trim()
-        val finishIndex = original.lastIndexOf("finish(")
-        val doIndex = original.lastIndexOf("do(")
-        val startIndex = when {
-            finishIndex >= 0 && doIndex >= 0 -> maxOf(finishIndex, doIndex)
-            finishIndex >= 0 -> finishIndex
-            doIndex >= 0 -> doIndex
-            else -> -1
+    /** 从 do( 开始按括号配对截取完整 do(...) 区域, 避免把后续命令/说明文字混入。 */
+    private fun extractBalancedRegion(text: String): String? {
+        var depth = 0
+        var started = false
+        for (i in text.indices) {
+            when (text[i]) {
+                '(', '（' -> {
+                    depth++
+                    started = true
+                }
+                ')', '）' -> {
+                    depth--
+                    if (started && depth == 0) return text.substring(0, i + 1)
+                }
+            }
         }
+        return null
+    }
 
-        val trimmed = if (startIndex >= 0) original.substring(startIndex).trim() else original
-
-        if (trimmed.startsWith("finish")) {
-            val messageRegex = Regex("""finish\s*\(\s*message\s*=\s*\"(.*)\"\s*\)""", RegexOption.DOT_MATCHES_ALL)
-            val message = messageRegex.find(trimmed)?.groupValues?.getOrNull(1) ?: ""
-            return ParsedAgentAction(metadata = "finish", actionName = null, fields = mapOf("message" to message))
-        }
-
-        if (!trimmed.startsWith("do")) {
-            return ParsedAgentAction(metadata = "unknown", actionName = null, fields = emptyMap())
-        }
-
-        val inner = trimmed.removePrefix("do").trim().removeSurrounding("(", ")")
+    private fun parseDoCommand(raw: String): ParsedAgentAction? {
+        val doMatch = doCommand.find(raw) ?: return null
+        val balanced = extractBalancedRegion(raw.substring(doMatch.range.first)) ?: return null
+        val openIdx = balanced.indexOfFirst { it == '(' || it == '（' }
+        if (openIdx < 0) return null
+        val inner = balanced.substring(openIdx + 1, balanced.length - 1).trim()
         val fields = mutableMapOf<String, String>()
-        val regex = Regex("""(\w+)\s*=\s*(?:\[(.*?)\]|\"(.*?)\"|'([^']*)'|([^,)]+))""")
+        val regex = Regex("""(\w+)\s*=\s*(?:\[(.*?)\]|"(.*?)"|'([^']*)'|([^,)]+))""")
         regex.findAll(inner).forEach { matchResult ->
             val key = matchResult.groupValues[1]
             val value = matchResult.groupValues.drop(2).firstOrNull { it.isNotEmpty() } ?: ""
             fields[key] = value
         }
+        val actionName = fields["action"] ?: return null
+        return ParsedAgentAction(metadata = "do", actionName = actionName, fields = fields)
+    }
 
-        return ParsedAgentAction(metadata = "do", actionName = fields["action"], fields = fields)
+    fun parseThinkingAndAction(content: String): Pair<String?, String> {
+        val full = content.trim()
+        val answer = extractAnswerBlock(full)
+        if (answer != null) {
+            val thinking = full.substring(0, answer.startIndex).trim().ifEmpty { null }
+            return thinking to answer.content
+        }
+        val firstCommand = listOf(finishCommand, doCommand)
+            .mapNotNull { it.find(full) }
+            .minByOrNull { it.range.first }
+        if (firstCommand == null) return null to full
+        val thinking = full.substring(0, firstCommand.range.first).trim().ifEmpty { null }
+        return thinking to full.substring(firstCommand.range.first).trim()
+    }
+
+    fun parseAgentAction(raw: String): ParsedAgentAction {
+        val original = raw.trim()
+        val finishMatch = finishCommand.find(original)
+        val doMatch = doCommand.find(original)
+
+        if (finishMatch != null) {
+            if (doMatch != null && doMatch.range.first < finishMatch.range.first) {
+                val doParsed = parseDoCommand(original)
+                if (doParsed != null) {
+                    return doParsed.copy(
+                        finishAfterDo = true,
+                        finishAfterDoMessage = parseFinishMessage(original)
+                    )
+                }
+            }
+            return ParsedAgentAction(
+                metadata = "finish",
+                actionName = null,
+                fields = mapOf("message" to parseFinishMessage(original))
+            )
+        }
+
+        if (doMatch != null) {
+            val doParsed = parseDoCommand(original)
+            if (doParsed != null) return doParsed
+        }
+
+        return ParsedAgentAction(metadata = "unknown", actionName = null, fields = emptyMap())
     }
 }
 

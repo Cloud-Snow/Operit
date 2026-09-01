@@ -687,6 +687,8 @@ $toolList
 17. 如果没有合适的搜索结果，可能是因为搜索页面不对，请返回到搜索页面的上一级尝试重新搜索，如果尝试三次返回上一级搜索后仍然没有符合要求的结果，执行 finish(message="原因").
 18. 在结束任务前请一定要仔细检查任务是否完整准确的完成，如果出现错选、漏选、多选的情况，请返回之前的步骤进行纠正.
 19. 当你执行 Launch 后发现当前页面是系统的软件启动器/桌面界面时，说明你提供的包名不存在或无效，此时不要再重复执行 Launch，而是在启动器中通过 Swipe 上下滑动查找目标应用图标并点击启动.
+20. 思考块（think）中只能用自然语言描述你的判断，严禁出现任何命令语法或命令示例（包括但不限于 finish(、do( 等字样），命令只能出现在 <answer> 中。
+21. 任务完成时，<answer> 中只能输出一条 finish(message="…")，严禁在 finish 前后再附带任何其他命令或文字；每条回答只允许一条命令。
     """
 
     const val UI_AUTOMATION_AGENT_PROMPT_EN = """
@@ -754,6 +756,8 @@ $toolList
  17. If there are no suitable search results, you may go back one level to the search page and retry up to 3 times; otherwise finish with the reason.
  18. Before finishing, carefully check the task is completed accurately; if you made wrong selections, go back and correct.
  19. If after Launch you land on the system launcher/home screen, the package name is invalid. Do not repeat Launch; instead, find the app icon by swiping and tap it.
+ 20. The think block must contain natural-language reasoning only. Never place any command syntax or command examples (including finish( or do() inside it; commands belong exclusively in the <answer> block.
+ 21. When the task is complete, the <answer> block must contain exactly one command: finish(message="..."). Do not attach any other command or explanation before or after it; allow only one command per answer.
      """
 
     fun uiAutomationAgentPrompt(useEnglish: Boolean): String {
