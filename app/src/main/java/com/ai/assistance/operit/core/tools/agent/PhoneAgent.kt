@@ -704,7 +704,7 @@ internal object PhoneAgentActionParser {
     private fun parseFinishMessage(raw: String): String {
         val msgRe = Regex(
             """\bfinish\s*[\(（]\s*message\s*=\s*["“'’](.*?)["“'’]""",
-            RegexOption.DOT_MATCHES_ALL or RegexOption.IGNORE_CASE
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
         )
         return msgRe.find(raw)?.groupValues?.getOrNull(1)?.trim() ?: ""
     }

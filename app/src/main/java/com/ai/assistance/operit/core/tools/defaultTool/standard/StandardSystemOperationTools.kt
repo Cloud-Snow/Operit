@@ -464,7 +464,7 @@ open class StandardSystemOperationTools(protected val context: Context) {
     }
 
     /** 获取已安装的应用列表 */
-    suspend fun listInstalledApps(tool: AITool): ToolResult {
+    open suspend fun listInstalledApps(tool: AITool): ToolResult {
         // 兼容两种参数名: 工具 schema 使用 include_system_apps, JS 桥 (Tools.System.listApps) 使用 include_system
         val includeSystemApps =
                 tool.parameters.find { it.name == "include_system_apps" || it.name == "include_system" }?.value?.toBoolean()
