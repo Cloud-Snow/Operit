@@ -2606,20 +2606,6 @@ object SystemToolPromptsInternal {
                                 )
                         ),
                         ToolPrompt(
-                            name = "list_installed_apps_v2",
-                            description = "List installed apps (v2 multi-channel: privileged shell / LauncherApps / PackageManager; comparison for list_installed_apps).",
-                            parametersStructured =
-                                listOf(
-                                    ToolParameterSchema(
-                                        name = "include_system_apps",
-                                        type = "boolean",
-                                        description = "optional",
-                                        required = false,
-                                        default = "false"
-                                    )
-                                )
-                        ),
-                        ToolPrompt(
                             name = "start_app",
                             description = "Start an app.",
                             parametersStructured =
@@ -5600,20 +5586,6 @@ object SystemToolPromptsInternal {
                         ToolPrompt(
                             name = "list_installed_apps",
                             description = "列出已安装应用。",
-                            parametersStructured =
-                                listOf(
-                                    ToolParameterSchema(
-                                        name = "include_system_apps",
-                                        type = "boolean",
-                                        description = "可选",
-                                        required = false,
-                                        default = "false"
-                                    )
-                                )
-                        ),
-                        ToolPrompt(
-                            name = "list_installed_apps_v2",
-                            description = "列出已安装应用 (v2 多通道: 特权shell / LauncherApps / PackageManager; 与 list_installed_apps 对比用)。",
                             parametersStructured =
                                 listOf(
                                     ToolParameterSchema(

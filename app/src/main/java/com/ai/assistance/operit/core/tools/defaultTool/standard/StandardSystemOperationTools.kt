@@ -466,59 +466,12 @@ open class StandardSystemOperationTools(private val context: Context) {
         }
     }
 
-    /** 获取已安装的应用列表 (v1, 上游原版实现) */
-    suspend fun listInstalledApps(tool: AITool): ToolResult {
-        val includeSystemApps =
-                tool.parameters.find { it.name == "include_system_apps" }?.value?.toBoolean()
-                        ?: false
-        return try {
-            val pm = context.packageManager
-            val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-            val appDetails = mutableListOf<String>()
-
-            apps.forEach { appInfo ->
-                val isSystemApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-                if (includeSystemApps || !isSystemApp) {
-                    val packageName = appInfo.packageName
-                    val appName =
-                            try {
-                                appInfo.loadLabel(pm).toString()
-                            } catch (e: Exception) {
-                                AppLogger.w(
-                                        TAG,
-                                        "Failed to load application label for $packageName",
-                                        e
-                                )
-                                packageName
-                            }
-                    appDetails.add("$appName ($packageName)")
-                }
-            }
-
-            val sortedAppDetails = appDetails.sorted()
-            val resultData = AppListData(
-                includesSystemApps = includeSystemApps, 
-                packages = sortedAppDetails
-            )
-            
-            ToolResult(toolName = tool.name, success = true, result = resultData)
-        } catch (e: Exception) {
-            AppLogger.e(TAG, "获取已安装应用列表时出错", e)
-            ToolResult(
-                    toolName = tool.name,
-                    success = false,
-                    result = StringResultData(""),
-                    error = "Failed to get app list: ${e.message}"
-            )
-        }
-    }
-
     /**
-     * v2 多通道应用列表 (与 list_installed_apps 并存的对比实现)。
+     * 获取已安装的应用列表 (多通道)。
      * 通道顺序: 特权 shell (DEBUGGER/ADMIN/ROOT) -> LauncherApps + PackageManager 合并。
      * 仅在特权级别尝试 shell, 避免标准级别下以应用 uid 运行 pm 返回受限列表却误判成功。
      */
-    suspend fun listInstalledAppsV2(tool: AITool): ToolResult {
+    suspend fun listInstalledApps(tool: AITool): ToolResult {
         // 兼容两种参数名: 工具 schema 使用 include_system_apps, JS 桥 (Tools.System.listApps) 使用 include_system
         val includeSystemApps =
                 tool.parameters.find { it.name == "include_system_apps" || it.name == "include_system" }?.value?.toBoolean()
@@ -535,7 +488,7 @@ open class StandardSystemOperationTools(private val context: Context) {
             val shellResult = try {
                 AndroidShellExecutor.executeShellCommand(command)
             } catch (e: Exception) {
-                AppLogger.w(TAG, "listInstalledAppsV2: shell command failed", e)
+                AppLogger.w(TAG, "listInstalledApps: shell command failed", e)
                 null
             }
             if (shellResult != null && shellResult.success) {
@@ -566,7 +519,7 @@ open class StandardSystemOperationTools(private val context: Context) {
             } else {
                 AppLogger.w(
                     TAG,
-                    "listInstalledAppsV2: shell unavailable (success=${shellResult?.success}, reason=${shellResult?.stderr ?: "not executed"})"
+                    "listInstalledApps: shell unavailable (success=${shellResult?.success}, reason=${shellResult?.stderr ?: "not executed"})"
                 )
             }
         }
@@ -612,7 +565,7 @@ open class StandardSystemOperationTools(private val context: Context) {
                 }
             }
         } catch (e: Exception) {
-            AppLogger.w(TAG, "listInstalledAppsV2: LauncherApps query failed", e)
+            AppLogger.w(TAG, "listInstalledApps: LauncherApps query failed", e)
         }
 
         val sortedAppDetails = packageEntries.entries
