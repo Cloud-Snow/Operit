@@ -604,7 +604,7 @@ open class StandardSystemOperationTools(private val context: Context) {
                     }
                     if (packageEntries.containsKey(packageName)) continue
                     val appName = try {
-                        resolved.loadLabel(pm).toString()
+                        info.applicationInfo?.loadLabel(pm)?.toString() ?: packageName
                     } catch (e: Exception) {
                         packageName
                     }
