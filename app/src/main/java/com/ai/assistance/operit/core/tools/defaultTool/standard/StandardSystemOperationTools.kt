@@ -31,6 +31,8 @@ import com.ai.assistance.operit.core.tools.StringResultData
 import com.ai.assistance.operit.core.tools.SystemSettingData
 import com.ai.assistance.operit.core.tools.defaultTool.websession.browser.WebSessionPermissionRequestCoordinator
 import com.ai.assistance.operit.core.tools.system.AndroidShellExecutor
+import com.ai.assistance.operit.core.tools.system.AndroidPermissionLevel
+import com.ai.assistance.operit.data.preferences.androidPermissionPreferences
 import com.ai.assistance.operit.data.model.AITool
 import com.ai.assistance.operit.data.model.ToolResult
 import java.util.Locale
@@ -55,7 +57,7 @@ import com.ai.assistance.operit.util.AndroidUserPathUtils
 import com.ai.assistance.operit.util.OperitPaths
 
 /** 提供系统级操作的工具类 包括系统设置修改、应用安装和卸载等 这些操作需要用户明确授权 */
-open class StandardSystemOperationTools(protected val context: Context) {
+open class StandardSystemOperationTools(private val context: Context) {
 
     companion object {
         private const val TAG = "SystemOperationTools"
@@ -464,21 +466,16 @@ open class StandardSystemOperationTools(protected val context: Context) {
         }
     }
 
-    /** 获取已安装的应用列表 */
-    open suspend fun listInstalledApps(tool: AITool): ToolResult {
-        // 兼容两种参数名: 工具 schema 使用 include_system_apps, JS 桥 (Tools.System.listApps) 使用 include_system
+    /** 获取已安装的应用列表 (v1, 上游原版实现) */
+    suspend fun listInstalledApps(tool: AITool): ToolResult {
         val includeSystemApps =
-                tool.parameters.find { it.name == "include_system_apps" || it.name == "include_system" }?.value?.toBoolean()
+                tool.parameters.find { it.name == "include_system_apps" }?.value?.toBoolean()
                         ?: false
         return try {
             val pm = context.packageManager
-
-            // packageName -> appName, 双通道合并 (PackageManager + LauncherApps)。
-            // 原因: Android 11+ 的包可见性在部分设备/策略下会使 getInstalledApplications 只返回本应用自身,
-            // LauncherApps (桌面级查询) 在这些设备上通常仍能看到带启动入口的应用列表。
-            val packageEntries = LinkedHashMap<String, String>()
-
             val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+            val appDetails = mutableListOf<String>()
+
             apps.forEach { appInfo ->
                 val isSystemApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
                 if (includeSystemApps || !isSystemApp) {
@@ -494,44 +491,16 @@ open class StandardSystemOperationTools(protected val context: Context) {
                                 )
                                 packageName
                             }
-                    packageEntries.putIfAbsent(packageName, appName)
+                    appDetails.add("$appName ($packageName)")
                 }
             }
 
-            try {
-                val launcherApps = context.getSystemService(Context.LAUNCHER_APPS_SERVICE) as? LauncherApps
-                if (launcherApps != null) {
-                    val activities = launcherApps.getActivityList(null, Process.myUserHandle())
-                    for (resolved in activities) {
-                        val info = resolved.activityInfo ?: continue
-                        val packageName = info.packageName ?: continue
-                        if (!includeSystemApps) {
-                            val appInfo = info.applicationInfo
-                            if (appInfo != null && (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0) {
-                                continue
-                            }
-                        }
-                        if (packageEntries.containsKey(packageName)) continue
-                        val appName = try {
-                            resolved.loadLabel(pm).toString()
-                        } catch (e: Exception) {
-                            packageName
-                        }
-                        packageEntries[packageName] = appName
-                    }
-                }
-            } catch (e: Exception) {
-                AppLogger.w(TAG, "Failed to query installed apps via LauncherApps", e)
-            }
-
-            val sortedAppDetails = packageEntries.entries
-                    .map { (packageName, appName) -> "$appName ($packageName)" }
-                    .sorted()
+            val sortedAppDetails = appDetails.sorted()
             val resultData = AppListData(
-                includesSystemApps = includeSystemApps,
+                includesSystemApps = includeSystemApps, 
                 packages = sortedAppDetails
             )
-
+            
             ToolResult(toolName = tool.name, success = true, result = resultData)
         } catch (e: Exception) {
             AppLogger.e(TAG, "获取已安装应用列表时出错", e)
@@ -542,6 +511,118 @@ open class StandardSystemOperationTools(protected val context: Context) {
                     error = "Failed to get app list: ${e.message}"
             )
         }
+    }
+
+    /**
+     * v2 多通道应用列表 (与 list_installed_apps 并存的对比实现)。
+     * 通道顺序: 特权 shell (DEBUGGER/ADMIN/ROOT) -> LauncherApps + PackageManager 合并。
+     * 仅在特权级别尝试 shell, 避免标准级别下以应用 uid 运行 pm 返回受限列表却误判成功。
+     */
+    suspend fun listInstalledAppsV2(tool: AITool): ToolResult {
+        // 兼容两种参数名: 工具 schema 使用 include_system_apps, JS 桥 (Tools.System.listApps) 使用 include_system
+        val includeSystemApps =
+                tool.parameters.find { it.name == "include_system_apps" || it.name == "include_system" }?.value?.toBoolean()
+                        ?: false
+        val privileged = when (androidPermissionPreferences.getPreferredPermissionLevel()) {
+            AndroidPermissionLevel.DEBUGGER,
+            AndroidPermissionLevel.ADMIN,
+            AndroidPermissionLevel.ROOT -> true
+            else -> false
+        }
+
+        if (privileged) {
+            val command = if (includeSystemApps) "pm list packages" else "pm list packages -3"
+            val shellResult = try {
+                AndroidShellExecutor.executeShellCommand(command)
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "listInstalledAppsV2: shell command failed", e)
+                null
+            }
+            if (shellResult != null && shellResult.success) {
+                val packageNames = shellResult.stdout.lineSequence()
+                    .map { it.trim() }
+                    .filter { it.startsWith("package:") }
+                    .map { it.removePrefix("package:").trim() }
+                    .filter { it.isNotEmpty() }
+                    .distinct()
+                    .toList()
+                if (packageNames.isNotEmpty()) {
+                    val pm = context.packageManager
+                    val appDetails = packageNames.map { packageName ->
+                        val appName = try {
+                            pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
+                        } catch (e: Exception) {
+                            // 包可见性受限时个别包名无法解析 label, 直接使用包名保证列表完整
+                            packageName
+                        }
+                        "$appName ($packageName)"
+                    }.sorted()
+                    return ToolResult(
+                        toolName = tool.name,
+                        success = true,
+                        result = AppListData(includesSystemApps = includeSystemApps, packages = appDetails)
+                    )
+                }
+            } else {
+                AppLogger.w(
+                    TAG,
+                    "listInstalledAppsV2: shell unavailable (success=${shellResult?.success}, reason=${shellResult?.stderr ?: "not executed"})"
+                )
+            }
+        }
+
+        // LauncherApps + PackageManager 合并通道
+        val pm = context.packageManager
+        val packageEntries = LinkedHashMap<String, String>()
+
+        val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+        apps.forEach { appInfo ->
+            val isSystemApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+            if (includeSystemApps || !isSystemApp) {
+                val packageName = appInfo.packageName
+                val appName = try {
+                    appInfo.loadLabel(pm).toString()
+                } catch (e: Exception) {
+                    packageName
+                }
+                packageEntries.putIfAbsent(packageName, appName)
+            }
+        }
+
+        try {
+            val launcherApps = context.getSystemService(Context.LAUNCHER_APPS_SERVICE) as? LauncherApps
+            if (launcherApps != null) {
+                val activities = launcherApps.getActivityList(null, Process.myUserHandle())
+                for (resolved in activities) {
+                    val info = resolved.activityInfo ?: continue
+                    val packageName = info.packageName ?: continue
+                    if (!includeSystemApps) {
+                        val appInfo = info.applicationInfo
+                        if (appInfo != null && (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0) {
+                            continue
+                        }
+                    }
+                    if (packageEntries.containsKey(packageName)) continue
+                    val appName = try {
+                        resolved.loadLabel(pm).toString()
+                    } catch (e: Exception) {
+                        packageName
+                    }
+                    packageEntries[packageName] = appName
+                }
+            }
+        } catch (e: Exception) {
+            AppLogger.w(TAG, "listInstalledAppsV2: LauncherApps query failed", e)
+        }
+
+        val sortedAppDetails = packageEntries.entries
+            .map { (packageName, appName) -> "$appName ($packageName)" }
+            .sorted()
+        return ToolResult(
+            toolName = tool.name,
+            success = true,
+            result = AppListData(includesSystemApps = includeSystemApps, packages = sortedAppDetails)
+        )
     }
 
     /** 启动应用程序 如果提供了activity参数，将启动指定的活动 否则使用默认启动器启动应用 */

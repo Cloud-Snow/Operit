@@ -2334,6 +2334,17 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
             }
     )
 
+    // 获取已安装应用列表 (v2, 多通道对比实现: 特权shell -> LauncherApps -> PackageManager)
+    handler.registerTool(
+            name = "list_installed_apps_v2",
+            descriptionGenerator = { _ ->
+                "List installed apps (v2: privileged shell / LauncherApps / PackageManager multi-channel; for comparison with list_installed_apps)."
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.listInstalledAppsV2(tool) }
+            }
+    )
+
     // 启动应用
     handler.registerTool(
             name = "start_app",

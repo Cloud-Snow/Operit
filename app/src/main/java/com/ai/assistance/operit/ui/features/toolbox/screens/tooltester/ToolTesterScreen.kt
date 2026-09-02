@@ -352,6 +352,7 @@ private fun getFinalToolTestGroups(context: android.content.Context): List<ToolG
         )),
         ToolGroup(context.getString(R.string.system_group), false, false, listOf(
             ToolTest("list_installed_apps", context.getString(R.string.list_apps_test), context.getString(R.string.list_apps_test_desc), listOf(ToolParameter("include_system_apps", "false"))),
+            ToolTest("list_installed_apps_v2", context.getString(R.string.list_apps_test) + " (v2)", context.getString(R.string.list_apps_test_desc) + " (v2 多通道对比)", listOf(ToolParameter("include_system_apps", "false"))),
             ToolTest("get_notifications", context.getString(R.string.get_notifications_test), context.getString(R.string.get_notifications_test_desc), listOf(ToolParameter("limit", "5"))),
             ToolTest("get_device_location", context.getString(R.string.device_location_test), context.getString(R.string.device_location_test_desc), listOf(ToolParameter("high_accuracy", "false"))),
             ToolTest("get_system_setting", context.getString(R.string.read_system_setting_test), context.getString(R.string.read_system_setting_test_desc), listOf(ToolParameter("setting", "screen_off_timeout"))),
