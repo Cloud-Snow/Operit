@@ -102,4 +102,19 @@ class PhoneAgentActionParserTest {
         val action = parse("<think>ok</think>\n<answer>任务已经完成，无需操作</answer>")
         assertEquals("unknown", action.metadata)
     }
+
+    /** AutoGLM 系模型原生把结束命令写成 do(action="finish", message=...), 必须判定为 finish。 */
+    @Test
+    fun autoglmStyleFinishDoAction_ends() {
+        val action = parse("<think>ok</think>\n<answer>do(action=\"finish\", message=\"任务完成\")</answer>")
+        assertEquals("finish", action.metadata)
+        assertEquals("任务完成", action.fields["message"])
+    }
+
+    @Test
+    fun capitalAutoglmStyleFinishDoAction_ends() {
+        val action = parse("<think>ok</think>\n<answer>do(action=\"Finish\", message=\"done\")</answer>")
+        assertEquals("finish", action.metadata)
+        assertEquals("done", action.fields["message"])
+    }
 }

@@ -40,6 +40,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import android.content.pm.PackageManager
 import android.content.pm.ApplicationInfo
+import android.content.pm.LauncherApps
 import android.app.ActivityManager
 import android.content.ComponentName
 import android.os.Build
@@ -471,9 +472,13 @@ open class StandardSystemOperationTools(protected val context: Context) {
                         ?: false
         return try {
             val pm = context.packageManager
-            val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-            val appDetails = mutableListOf<String>()
 
+            // packageName -> appName, 双通道合并 (PackageManager + LauncherApps)。
+            // 原因: Android 11+ 的包可见性在部分设备/策略下会使 getInstalledApplications 只返回本应用自身,
+            // LauncherApps (桌面级查询) 在这些设备上通常仍能看到带启动入口的应用列表。
+            val packageEntries = LinkedHashMap<String, String>()
+
+            val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
             apps.forEach { appInfo ->
                 val isSystemApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
                 if (includeSystemApps || !isSystemApp) {
@@ -489,16 +494,44 @@ open class StandardSystemOperationTools(protected val context: Context) {
                                 )
                                 packageName
                             }
-                    appDetails.add("$appName ($packageName)")
+                    packageEntries.putIfAbsent(packageName, appName)
                 }
             }
 
-            val sortedAppDetails = appDetails.sorted()
+            try {
+                val launcherApps = context.getSystemService(Context.LAUNCHER_APPS_SERVICE) as? LauncherApps
+                if (launcherApps != null) {
+                    val activities = launcherApps.getActivityList(null, Process.myUserHandle())
+                    for (resolved in activities) {
+                        val info = resolved.activityInfo ?: continue
+                        val packageName = info.packageName ?: continue
+                        if (!includeSystemApps) {
+                            val appInfo = info.applicationInfo
+                            if (appInfo != null && (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0) {
+                                continue
+                            }
+                        }
+                        if (packageEntries.containsKey(packageName)) continue
+                        val appName = try {
+                            resolved.loadLabel(pm).toString()
+                        } catch (e: Exception) {
+                            packageName
+                        }
+                        packageEntries[packageName] = appName
+                    }
+                }
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "Failed to query installed apps via LauncherApps", e)
+            }
+
+            val sortedAppDetails = packageEntries.entries
+                    .map { (packageName, appName) -> "$appName ($packageName)" }
+                    .sorted()
             val resultData = AppListData(
-                includesSystemApps = includeSystemApps, 
+                includesSystemApps = includeSystemApps,
                 packages = sortedAppDetails
             )
-            
+
             ToolResult(toolName = tool.name, success = true, result = resultData)
         } catch (e: Exception) {
             AppLogger.e(TAG, "获取已安装应用列表时出错", e)

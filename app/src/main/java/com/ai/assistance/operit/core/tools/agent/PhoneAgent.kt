@@ -784,7 +784,17 @@ internal object PhoneAgentActionParser {
 
         if (doMatch != null) {
             val doParsed = parseDoCommand(original)
-            if (doParsed != null) return doParsed
+            if (doParsed != null) {
+                if (doParsed.actionName.equals("finish", ignoreCase = true)) {
+                    // AutoGLM 系模型原生以 do(action="finish", message="...") 表示结束
+                    return ParsedAgentAction(
+                        metadata = "finish",
+                        actionName = null,
+                        fields = mapOf("message" to (doParsed.fields["message"] ?: ""))
+                    )
+                }
+                return doParsed
+            }
         }
 
         return ParsedAgentAction(metadata = "unknown", actionName = null, fields = emptyMap())
