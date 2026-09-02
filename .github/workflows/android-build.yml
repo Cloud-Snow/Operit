@@ -198,6 +198,29 @@ jobs:
           set -euo pipefail
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
+      - name: Restore persistent debug keystore
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v6
+        with:
+          path: ~/.android/debug.keystore
+          key: operit-android-debug-keystore-v1
+
+      - name: Ensure persistent debug keystore exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 固定 debug 签名: 使不同构建产出的 APK 签名一致, 允许 adb install -r 增量升级;
+          # 否则每次构建生成随机 debug keystore, 升级时 INSTALL_FAILED_UPDATE_INCOMPATIBLE, 只能卸载重装(丢数据)。
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore ~/.android/debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
       - name: Run Gradle build
         env:
           DISPATCH_GRADLE_TASK: ${{ inputs.gradle_task }}
